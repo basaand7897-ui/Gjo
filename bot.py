@@ -3,11 +3,13 @@
 """
 Telegram-бот Макс — эксперт-консультант магазина «Авангард»
 Напольные покрытия и обои.
+Запускается как Web Service (вебхуки).
 """
 
 import os
 import random
 import logging
+import asyncio
 from telegram import ReplyKeyboardMarkup, Update
 from telegram.ext import (
     Application,
@@ -17,7 +19,7 @@ from telegram.ext import (
     ContextTypes,
 )
 
-# ---------- Логирование (поможет искать ошибки) ----------
+# ---------- Логирование ----------
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
@@ -59,9 +61,6 @@ def main_keyboard() -> ReplyKeyboardMarkup:
         ],
         resize_keyboard=True,
     )
-
-def back_to_main_kb() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup([["🏠 В начало"]], resize_keyboard=True)
 
 # ---------- Банк лайфхаков ----------
 TIPS = [
@@ -321,7 +320,6 @@ async def choose_room_step(update: Update, context: ContextTypes.DEFAULT_TYPE, t
         return
     context.user_data["wizard"]["room"] = text
 
-    # вопрос о нагрузке
     if text == "🛁 Ванная":
         question = "Ванная — повышенная влажность! 💧\nУточню: важна ли влагостойкость?"
         kb = ReplyKeyboardMarkup(
@@ -386,7 +384,6 @@ async def show_recommendation(update: Update, context: ContextTypes.DEFAULT_TYPE
     load = w.get("load", "")
     budget = w.get("budget", "")
 
-    # логика подбора (краткая)
     if room in ("🍳 Кухня", "🛁 Ванная"):
         if budget == "💰 Эконом":
             mat = "полукоммерческий линолеум (31–33 класс)"
@@ -409,7 +406,7 @@ async def show_recommendation(update: Update, context: ContextTypes.DEFAULT_TYPE
             else:
                 mat = "ламинат 32–33 класса или кварц-винил"
                 desc = "Эстетично и устойчиво к истиранию."
-    else:  # жилые комнаты
+    else:
         if load == "🤧 Аллергия (важно!)":
             if budget == "💰 Эконом":
                 mat = "натуральный линолеум (мармолеум)"
@@ -474,7 +471,7 @@ async def compare_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     context.user_data["state"] = COMPARE_MENU
 
 async def compare_actions(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
-    await category_info_handler(update, context, text)  # используем тот же обработчик
+    await category_info_handler(update, context, text)
 
 # ---------- Лайфхаки ----------
 async def tips_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -546,18 +543,39 @@ async def feedback_date_step(update: Update, context: ContextTypes.DEFAULT_TYPE,
     await update.message.reply_text("Спасибо! Я передал информацию менеджеру. С тобой свяжутся в ближайшие 15–20 минут.")
     await start(update, context)
 
-# ---------- Точка входа ----------
-def main() -> None:
+# ---------- Точка входа (вебхуки) ----------
+async def main():
     app = Application.builder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("about", about))
-    # Все текстовые сообщения (кроме команд)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    logger.info("Бот Макс запущен...")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    # Получаем порт от Render
+    port = int(os.environ.get("PORT", 8443))
+
+    # Формируем webhook URL
+    # Приоритет: явно заданный WEBHOOK_URL, затем RENDER_EXTERNAL_URL + /telegram
+    webhook_url = os.environ.get("WEBHOOK_URL")
+    if not webhook_url:
+        external_url = os.environ.get("RENDER_EXTERNAL_URL")
+        if external_url:
+            webhook_url = f"{external_url}/telegram"
+        else:
+            # Если ничего не задано — только для локального тестирования
+            webhook_url = f"https://localhost:{port}/telegram"
+
+    logger.info(f"Устанавливаю вебхук: {webhook_url}")
+    await app.bot.set_webhook(url=webhook_url)
+
+    # Запускаем веб-сервер
+    await app.run_webhook(
+        listen="0.0.0.0",
+        port=port,
+        webhook_url=webhook_url,
+        drop_pending_updates=True,
+    )
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
